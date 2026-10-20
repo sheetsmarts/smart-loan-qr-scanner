@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Loan QR Scanner Test</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;background:#f7f7f7;color:#161616;margin:0;padding:20px}
+main{max-width:540px;margin:auto}section{background:white;border:1px solid #d8dee9;border-radius:12px;padding:18px;margin:14px 0}
+button{font:inherit;background:#f67c25;color:#161616;border:0;border-radius:9px;padding:12px 16px;margin:6px 5px 6px 0}
+button:disabled{opacity:.45}#reader{width:100%}#result{font-size:22px;font-weight:700;overflow-wrap:anywhere}
+small{color:#667085}h1{color:#161616;border-bottom:4px solid #f67c25;padding-bottom:16px}a{color:#873f12}button:hover:not(:disabled){background:#d2691e}input{max-width:100%}
+[hidden]{display:none!important}
+#scanResult{scroll-margin-top:16px}
+#use{display:block;box-sizing:border-box;width:100%;min-height:64px;font-size:20px;font-weight:700;white-space:normal;margin:12px 0}
+.result-tools{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.result-tools button{width:100%;min-height:48px;margin:0;background:#f3f4f6;color:#303030;border:1px solid #d8dee9}
+.result-tools button:hover:not(:disabled){background:#e5e7eb}
+</style>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+<main>
+<h1>Smart Loan QR Scanner</h1>
+<p>Scan an equipment Item ID. When opened from the loan system, tap Use Item after scanning, then review and confirm the loan or return there. This scanner does not access your inventory or save transactions.</p>
+<section>
+<h2>Live camera</h2>
+<div id="reader"></div>
+<button id="start">Start Camera</button>
+<button id="stop" disabled>Stop Camera</button>
+<p id="status" role="status">Ready to scan.</p>
+</section>
+<section>
+<h2>Photo fallback</h2>
+<label for="photo">Choose or take a photo of a QR code</label>
+<p><input id="photo" type="file" accept="image/*" capture="environment"></p>
+<p id="photoStatus"></p>
+</section>
+<section id="scanResult">
+<h2>Scanned Item ID</h2>
+<p id="result" aria-live="polite">No code scanned yet.</p>
+<button id="use" disabled hidden>Use This Item</button>
+<div class="result-tools">
+<button id="copy" disabled>Copy Item ID</button>
+<button id="reset">Clear</button>
+</div>
+<a id="returnLink" hidden>Return to loan system</a>
+</section>
+<small>Test on iPhone Safari and Android Chrome. Grant camera access if prompted. The QR decoding library needs an internet connection.</small>
+</main>
+<script>
+(() => {
+  'use strict';
+  const get = id => document.getElementById(id);
+  let camera = null, running = false, stopping = false, lastValue = '';
+  const params = new URLSearchParams(location.search);
+  const nonce = params.get('scanNonce') || '';
+  const mode = params.get('scanMode') === 'return' ? 'return' : 'loan';
+  let returnUrl = null, parentOrigin = '';
+  try {
+    const candidate = new URL(params.get('returnTo'));
+    const parent = new URL(params.get('parentOrigin'));
+    if (candidate.origin === 'https://script.google.com' && /^\/macros\/s\/[A-Za-z0-9_-]+\/(exec|dev)$/.test(candidate.pathname) &&
+        parent.protocol === 'https:' && (parent.hostname === 'script.google.com' || parent.hostname === 'script.googleusercontent.com' || parent.hostname.endsWith('-script.googleusercontent.com') || parent.hostname.endsWith('.script.googleusercontent.com')) &&
+        /^[a-f0-9]{32}$/.test(nonce)) {
+      returnUrl = candidate; parentOrigin = parent.origin;
+      get('use').hidden = false;
+      get('use').textContent = mode === 'return' ? 'Use Item for Return' : 'Use Item for New Loan';
+    }
+  } catch (_) {}
+  const setStatus = message => { get('status').textContent = message; };
+  async function stopCamera() {
+    if (stopping) return;
+    stopping = true;
+    const current = camera;
+    camera = null;
+    running = false;
+    get('start').disabled = false;
+    get('stop').disabled = true;
+    if (current) {
+      try { await current.stop(); } catch (_) {}
+      try { await current.clear(); } catch (_) {}
+    }
+    stopping = false;
+  }
+  function scanned(value) {
+    const id = String(value || '').trim();
+    if (!id || id.length > 200 || /[\x00-\x1f\x7f]/.test(id)) { setStatus('Scan a QR code containing only an Item ID (maximum 200 characters).'); return; }
+    lastValue = id;
+    get('result').textContent = id;
+    get('copy').disabled = false;
+    get('use').disabled = false;
+    get('returnLink').hidden = true;
+    setStatus('QR code read successfully. No loan records were changed.');
+    stopCamera().then(() => {
+      requestAnimationFrame(() => {
+        get('scanResult').scrollIntoView({behavior: 'smooth', block: 'start'});
+      });
+    });
+  }
+  async function startCamera() {
+    if (running || stopping) return;
+    if (typeof Html5Qrcode === 'undefined') {
+      setStatus('QR scanner library could not load. Check your internet connection.');
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatus('Camera API is unavailable in this browser.');
+      return;
+    }
+    const instance = new Html5Qrcode('reader', {
+      formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+      verbose: false
+    });
+    camera = instance;
+    running = true;
+    get('start').disabled = true;
+    get('stop').disabled = false;
+    setStatus('Opening rear camera... Allow camera access if prompted.');
+    try {
+      await instance.start({facingMode:'environment'},
+        {fps:10,qrbox:{width:230,height:230}},
+        scanned, () => {});
+      if (running) setStatus('Point your camera at the QR code.');
+    } catch (error) {
+      setStatus('Camera could not start automatically. Tap Start Camera to try again, or use the photo option. ' + (error.message || error));
+      await stopCamera();
+    }
+  }
+  get('start').addEventListener('click', startCamera);
+  get('stop').addEventListener('click', async () => {
+    await stopCamera();
+    setStatus('Camera stopped.');
+  });
+  get('photo').addEventListener('change', async event => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    await stopCamera();
+    if (typeof Html5Qrcode === 'undefined') {
+      get('photoStatus').textContent = 'QR scanner library unavailable.';
+      return;
+    }
+    const instance = new Html5Qrcode('reader', {
+      formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+      verbose: false
+    });
+    get('photoStatus').textContent = 'Reading photo...';
+    try {
+      const decoded = await instance.scanFile(file, true);
+      scanned(decoded);
+      get('photoStatus').textContent = 'QR code found.';
+    } catch (error) {
+      get('photoStatus').textContent = 'Could not read QR code from photo.';
+    } finally {
+      try { await instance.clear(); } catch (_) {}
+      event.target.value = '';
+    }
+  });
+  get('copy').addEventListener('click', async () => {
+    if (!lastValue) return;
+    try {
+      await navigator.clipboard.writeText(lastValue);
+      setStatus('Item ID copied.');
+    } catch (_) {
+      setStatus('Clipboard unavailable. Copy the Item ID shown above manually.');
+    }
+  });
+  window.addEventListener('message', event => {
+    if (event.source === window.opener && event.origin === parentOrigin && event.data &&
+        event.data.type === 'smart-loan-qr-accepted' && event.data.nonce === nonce) window.close();
+  });
+  get('use').addEventListener('click', () => {
+    if (!lastValue || !returnUrl) return;
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage({type:'smart-loan-qr-result', itemId:lastValue, nonce}, parentOrigin);
+      setStatus('Item ID sent. Switch back to the loan system to review the equipment.');
+      // Wait for acknowledgement so a blocked connection never silently loses the ID.
+    }
+    // Fallback when the mobile browser cannot preserve the opener connection.
+    const link = new URL(returnUrl.href);
+    link.searchParams.set('scannedItemId', lastValue);
+    link.searchParams.set('scanMode', mode);
+    link.searchParams.set('scanNonce', nonce);
+    get('returnLink').href = link.href;
+    get('returnLink').hidden = false;
+    get('returnLink').textContent = 'If the form did not open, return to the loan system here';
+  });
+  get('reset').addEventListener('click', () => {
+    lastValue = '';
+    get('result').textContent = 'No code scanned yet.';
+    get('copy').disabled = true;
+    get('use').disabled = true;
+    get('returnLink').hidden = true;
+  });
+  window.addEventListener('pagehide', () => { stopCamera(); });
+  // The app's Scan action already expresses intent to use the camera.
+  // Standalone visits remain manual; both loan and return launches start immediately.
+  if (returnUrl) startCamera();
+})();
+</script>
+</body>
+</html>
